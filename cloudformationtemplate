@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: CloudFormation Template to create a Lambda Function to start and stop EC2 instances
+Parameters:
+  InstanceIds:
+    Type: CommaDelimitedList
+    Description: The instance-id(s) for scheduled start/stop
+    Default: 'YOUR INSTANCE ID'
+  StartSchedule:
+    Type: String
+    Description: CRON expression for start schedule
+    Default: 'cron(0 3 ? * MON-FRI *)'
+  StopSchedule:
+    Type: String
+    Description: CRON expression for stop schedule
+    Default: 'cron(0 17 ? * MON-FRI *)'
+Resources:
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:DescribeInstances
+                Resource: '*'
+
+  # Lambda Function
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+          def lambda_handler(event, context):
+              ec2 = boto3.client('ec2')
+              instance_id = event['instance_id']
+
+              if event['action'] == 'start':
+                  ec2.start_instances(InstanceIds=[instance_id])
+              elif event['action'] == 'stop':
+                  ec2.stop_instances(InstanceIds=[instance_id])
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Successfully executed action')
+              }
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 30
+
+  # CloudWatch Events
+  StartEC2Event:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Start EC2 Instance
+      ScheduleExpression: !Ref StartSchedule
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: StartEC2
+          Input: !Sub
+            - '{"action": "start", "instance_id": "${InstanceId}"}'
+            - InstanceId: !Select [0, !Ref InstanceIds]
+
+  StopEC2Event:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Stop EC2 Instance
+      ScheduleExpression: !Ref StopSchedule
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: StopEC2
+          Input: !Sub
+            - '{"action": "stop", "instance_id": "${InstanceId}"}'
+            - InstanceId: !Select [0, !Ref InstanceIds]
